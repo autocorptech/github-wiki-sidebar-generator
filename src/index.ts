@@ -4,42 +4,82 @@ const ignore = require("ignore-file") as any;
 
 const tab = "  ";
 const maxHeadingDepth = 6;
+function formatLink(name: string, link?: string) {
+  return !!link ? `[[${name}|${link}]]` : name;
+}
 
 function formatListItem(depth: number, name: string, link?: string): string {
   const indent = tab.repeat(depth);
-  return link !== undefined
-    ? `${indent}- [[${name}|${link}]]\n`
-    : `${indent}- ${name}\n`;
+  return `${indent}- ${formatLink(name, link)}\n`;
 }
 
-function formatHeading(depth: number, name: string): string {
-  return `${'#'.repeat(Math.min(depth + 1, maxHeadingDepth))} ${name}\n`
+function formatHeading(
+  depth: number,
+  name: string,
+  bufMod: number = 0
+): string {
+  if (!name) return "";
+  const tail = bufMod < 0 ? "\n" : "\n\n";
+  const buffer = bufMod > 0 ? "\n".repeat(bufMod) : "";
+  return [
+    buffer,
+    '#'.repeat(Math.min(depth + 1, maxHeadingDepth)) + " ",
+    name,
+    tail
+  ].join("");
+}
+
+function formatTitle(name: string) {
+  return formatHeading(0, name, -1);
+}
+
+function getIndex(folder: string, names?: string | string[]): string | void {
+  if (names == null) return;
+  names = Array.isArray(names) ? names : [names];
+  const chkName = folder.toLowerCase();
+  return names.find(f => {
+    const base = path.basename(f, '.md').toLowerCase();
+    return base === chkName || base.startsWith("index-") || base.endsWith("-index")
+  })
 }
 
 type Filter = (path: string) => boolean;
 
-interface Formatter {
-  page: (depth: number, name: string) => string
-  directory: (depth: number, name: string) => string
-}
+type Formatter<A = never> = {
+  depth: number;
+  page: (name: string) => string
+  directory: (name: string, link?: string) => string
+} & ([A] extends [never] ? Record<never, never> : A)
 
 const sidebarFormatter: Formatter = {
-  page(depth: number, name: string): string {
-    return formatListItem(depth, name, name);
+  depth: 0,
+  page(name: string): string {
+    return formatListItem(this.depth, name, name);
   },
-  directory(depth: number, name: string): string {
-    return formatListItem(depth, name);
+  directory(name: string, link?: string): string {
+    return formatListItem(this.depth++, name, link);
   }
 }
 
-const homeFormatter: Formatter = {
-  page(_depth: number, name: string): string {
-    return formatListItem(0, name, name);
+const homeFormatter: Formatter<{ level: number }> = {
+  depth: 0,
+  level: 0,
+  page(name: string): string {
+    return formatListItem(this.depth, name, name);
   },
-  directory(depth: number, name: string): string {
-    return depth < maxHeadingDepth
-      ? formatHeading(depth, name)
-      : formatListItem(depth - maxHeadingDepth, name);
+  directory(name: string, link?: string): string {
+    this.depth = 0;
+    const ret = [];
+    const printHeading = this.level < maxHeadingDepth;
+    if (printHeading) {
+      ret.push(formatHeading(++this.level, name, 1))
+    }
+
+    if (!!link || !printHeading) {
+      ret.push(formatListItem(this.depth++, name, link))
+    }
+
+    return ret.filter(Boolean).join("");
   }
 }
 
@@ -47,7 +87,6 @@ function addDirectoryItems(
   doc: string,
   rootPath: string,
   dirPath: string,
-  depth: number,
   filter: Filter,
   formatter: Formatter
 ): string {
@@ -69,17 +108,30 @@ function addDirectoryItems(
       return aFile.localeCompare(bFile, undefined, { sensitivity: "base" })
     });
 
+  let folderName = path.basename(dirPath);
   return files.reduce((acc, [filename, absPath, stats]) => {
     if (!(filename.startsWith(".") || filename.startsWith("_"))) {
       const relPath = path.relative(rootPath, absPath);
       if (relPath == "Home.md") return acc;
+
+
       if (!filter(relPath)) {
         if (stats.isDirectory()) {
-          acc += formatter.directory(depth, filename);
-          acc = addDirectoryItems(acc, rootPath, absPath, depth + 1, filter, formatter);
+          let folderName = path.basename(absPath);
+          const dirFormatter = Object.create(formatter);
+          const nextFiles = fs.readdirSync(absPath);
+          const indexFile = getIndex(folderName, nextFiles) || "";
+          acc += dirFormatter.directory(
+            filename,
+            path.basename(indexFile, ".md")
+          );
+          acc = addDirectoryItems(acc, rootPath, absPath, filter, dirFormatter);
         } else if (filename.endsWith(".md") && stats.isFile()) {
-          const name = filename.slice(0, filename.length - ".md".length);
-          acc += formatter.page(depth, name);
+          if (!getIndex(folderName, filename)) {
+            const ext = path.extname(filename);
+            const name = path.basename(filename, ext);
+            acc += formatter.page(name);
+          }
         }
       }
     }
@@ -88,11 +140,11 @@ function addDirectoryItems(
 }
 
 export function generateSidebar(root: string, filter: Filter): string {
-  return addDirectoryItems("", root, root, 0, filter, sidebarFormatter);
+  return addDirectoryItems("", root, root, filter, sidebarFormatter);
 }
 
 export function generateHome(root: string, title: string, filter: Filter) {
-  return addDirectoryItems(formatHeading(0, title), root, root, 1, filter, homeFormatter);
+  return addDirectoryItems(formatTitle(title), root, root, filter, homeFormatter);
 }
 
 export function writeSidebar(root: string, filter: Filter): void {
