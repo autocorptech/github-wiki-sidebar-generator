@@ -1,6 +1,6 @@
 import fs, { Stats } from "fs";
 import path from "path";
-const ignore = require("ignore-file") as any;
+import micromatch from "micromatch";
 
 const tab = "  ";
 const maxHeadingDepth = 6;
@@ -43,7 +43,7 @@ function getIndex(folder: string, names?: string | string[]): string | void {
   })
 }
 
-type Filter = (path: string) => boolean;
+type Filter = (path: string, stat: Stats) => boolean;
 
 type Formatter<A = never> = {
   depth: number;
@@ -115,7 +115,7 @@ function addDirectoryItems(
       if (relPath == "Home.md") return acc;
 
 
-      if (!filter(relPath)) {
+      if (!filter(relPath, stats)) {
         if (stats.isDirectory()) {
           let folderName = path.basename(absPath);
           const dirFormatter = Object.create(formatter);
@@ -162,8 +162,32 @@ function writeFile(path: string, content: string) {
   console.log(`Created ${path}`);
 }
 
+const filterFiles: Filter = (fpath, stat) => {
+  const dirIgnore = [
+    ".wikiignore"
+  ];
+
+  const dirFiles = fs.readdirSync(
+    stat.isDirectory()
+      ? fpath
+      : path.dirname(fpath)
+  ).filter((p) => dirIgnore.includes(p));
+
+  const ignore = [
+    "node_modules",
+    "*.json",
+    ".*"
+  ].concat(dirIgnore);
+
+
+  const matchPaths = [
+    fpath,
+  ].concat(dirFiles)
+
+  return !!micromatch(matchPaths, `**/@(${ignore.join("|")})`).length;
+}
+
 export function write(root: string, title: string) {
-  const filter = ignore.sync(".wikiignore") || ignore.compile("");
-  writeHome(root, title, filter);
-  writeSidebar(root, filter);
+  writeHome(root, title, filterFiles);
+  writeSidebar(root, filterFiles);
 }
